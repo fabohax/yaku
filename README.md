@@ -38,7 +38,7 @@ yaku/
 │── config.py            # Configuration loader for API keys and bot settings
 │── go.sh                # Bash script to run the bot
 │── README.md            # Project documentation
-│── .env                 # Environment variables (ignored by Git)
+│── .env                 # Environment variables
 │── requirements.txt     # Python dependencies
 │── logs/                # Directory to store bot logs
 ```
