@@ -6,7 +6,7 @@ from telegram.ext import ApplicationBuilder
 import asyncio
 import time
 
-from config import OKX_API_KEY, OKX_API_SECRET, OKX_API_PASSWORD, TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID
+from config import TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID
 
 # OKX API Base URL
 BASE_URL = "https://www.okx.com"
