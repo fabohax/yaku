@@ -1,0 +1,48 @@
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Virtual environment
+venv/
+env/
+
+# Environment variables
+.env
+
+# Logs and databases
+logs/
+*.log
+*.sqlite3
+
+# OS-specific files
+.DS_Store
+Thumbs.db
+
+# Python dependencies
+*.egg-info/
+*.eggs/
+*.lock
+
+# Temporary files
+*.tmp
+*.swp
+*.swo
+*.bak
+
+# Jupyter Notebook checkpoints
+.ipynb_checkpoints/
+
+# IDE and editor-specific files
+.vscode/
+.idea/
+*.iml
+
+# Build artifacts
+dist/
+build/
+*.spec
+
+# Ignore nohup outputs
+nohup.out
+
