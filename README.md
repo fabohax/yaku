@@ -156,8 +156,5 @@ Pull requests and issues are welcome! If you'd like to contribute, feel free to 
 
 ---
 
-## **License 📜**
-This project is Open Source.
-
 <br/>
 <sub>⚠ Warning: yaku is designed primarily for BTC/USDT due to its high liquidity and optimal volatility performance. Usage on other pairs may result in inconsistent signals. Always conduct your own risk assessment before trading. 🚀📊</sub>
