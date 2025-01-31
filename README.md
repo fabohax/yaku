@@ -72,7 +72,7 @@ pip install -r requirements.txt
 ---
 
 ### **4. Set Up Environment Variables 🔑**
-Create a `.env` file and add your **OKX API keys** and **Telegram bot credentials**:
+Create a `.env` file and add your **Telegram bot credentials**:
 
 ```env
 TELEGRAM_BOT_TOKEN=your_telegram_token
