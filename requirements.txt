@@ -1,4 +1,6 @@
+python-dotenv
+requests
 pandas
 numpy
 ta
-telegram
+python-telegram-bot
