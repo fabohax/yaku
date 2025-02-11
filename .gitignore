@@ -46,3 +46,4 @@ build/
 # Ignore nohup outputs
 nohup.out
 
+ohlcv_data.csv
