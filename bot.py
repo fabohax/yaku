@@ -2,93 +2,102 @@ import requests
 import logging
 import pandas as pd
 from ta.trend import MACD
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone, timedelta
 from telegram.ext import ApplicationBuilder
 import asyncio
-import time
+import os
 
 from config import TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID
 
 # OKX API Base URL
 BASE_URL = "https://www.okx.com"
+CSV_FILE = "ohlcv_data.csv"
 
-# Variables to track bullish crossover
+# Variables to track trade signals
 bullish_cross_time = None
 bullish_cross_price = None
-signaled_19_min = False
-signaled_50_percent = False
+sell_triggered = False  # To avoid redundant sell alerts
 
-
-# Configure logging
+# Logging Configuration
 logging.basicConfig(
     filename='logs/bot.log',
-    filemode='a',  # Append mode
+    filemode='a',
     format='%(asctime)s - %(levelname)s - %(message)s',
-    level=logging.INFO  # Set logging level to INFO
+    level=logging.INFO
 )
 
-# Example: Log a startup message
 logging.info("Bot started successfully.")
 
 
-# Function to fetch sufficient OHLCV data
-def fetch_ohlcv(symbol="BTC-USDT", timeframe="1m", required_candles=200):
+# Function to fetch the latest OHLCV candle
+def fetch_latest_candle(symbol="BTC-USDT", timeframe="1m"):
     try:
-        endpoint = f"/api/v5/market/candles"
-        limit_per_call = 100
-        total_candles = 0
-        all_candles = []
+        endpoint = "/api/v5/market/candles"
+        params = {
+            "instId": symbol,
+            "bar": timeframe,
+            "limit": "1",
+        }
+        url = f"{BASE_URL}{endpoint}"
+        response = requests.get(url, params=params)
+        response.raise_for_status()
+        data = response.json()
+        candle = data.get("data", [])
+
+        if not candle:
+            return None
         
-        now = datetime.now(timezone.utc)
-        after = int((now - timedelta(minutes=required_candles * 2)).timestamp() * 1000)  # Ensure it covers enough range
+        timestamp, open_, high, low, close, volume, *_ = candle[0]
+        timestamp = datetime.fromtimestamp(int(timestamp) / 1000, tz=timezone.utc)  # ✅ FIXED: Correct UTC handling
 
-        while total_candles < required_candles:
-            params = {
-                "instId": symbol,
-                "bar": timeframe,
-                "limit": str(limit_per_call),
-                "after": after,
-            }
-            url = f"{BASE_URL}{endpoint}"
-            response = requests.get(url, params=params)
-            response.raise_for_status()
-            data = response.json()
-            candles = data.get("data", [])
+        candle_data = {
+            "timestamp": timestamp,
+            "open": float(open_),
+            "high": float(high),
+            "low": float(low),
+            "close": float(close),
+            "volume": float(volume),
+        }
 
-            if not candles:
-                break  # Stop if no more data is returned
-            
-            all_candles.extend(candles)
-            total_candles += len(candles)
-            after = int(pd.to_numeric(candles[-1][0]))  # Update 'after' to fetch newer data
-            
-            print(f"Fetched {len(candles)} more candles. Total so far: {total_candles}")
+        # ✅ PRINT CANDLE EVERY TIME IT'S FETCHED
+        print(f"📊 Candle Fetched: {timestamp} | Open: {open_} | High: {high} | Low: {low} | Close: {close} | Volume: {volume}")
 
-        # 🔹 Ensure we have the latest candles (OKX API returns newest first)
-        all_candles.reverse()
-
-        # 🔹 Define all columns
-        column_names = ['timestamp', 'open', 'high', 'low', 'close', 'volume', 'volCcy', 'volCcyQuote', 'confirm']
-        df = pd.DataFrame(all_candles, columns=column_names)
-
-        # 🔹 Convert timestamp to datetime
-        df['timestamp'] = pd.to_datetime(pd.to_numeric(df['timestamp']), unit='ms', utc=True)
-
-        # 🔹 Convert relevant columns to float
-        df[['open', 'high', 'low', 'close', 'volume']] = df[['open', 'high', 'low', 'close', 'volume']].astype(float)
-
-        # 🔍 Debugging: Print timestamps to verify freshness
-        print("Fetched OHLCV data timestamps (UTC):")
-        print(df[['timestamp', 'close']].tail())  # Print last few rows for verification
-        print(f"✅ Latest fetched close price: {df['close'].iloc[-1]}")
-        print(df.head())  # First few rows
-        print(df.tail())  # Last few rows
-
-        return df.iloc[-required_candles:]  # Return the exact number of required candles
+        return candle_data
 
     except Exception as e:
-        print(f"❌ Error fetching data: {e}")
-        return pd.DataFrame()
+        logging.error(f"Error fetching latest candle: {e}")
+        return None
+
+
+# Function to save new candle data locally
+def save_candle_locally(new_candle):
+    try:
+        if not os.path.exists(CSV_FILE):
+            df = pd.DataFrame(columns=["timestamp", "open", "high", "low", "close", "volume"])
+            df.to_csv(CSV_FILE, index=False)
+
+        df = pd.read_csv(CSV_FILE)
+        df["timestamp"] = pd.to_datetime(df["timestamp"])
+
+        if not df[df["timestamp"] == new_candle["timestamp"].strftime("%Y-%m-%d %H:%M:%S")].empty:
+            return False  # Candle already exists
+
+        new_row = pd.DataFrame([new_candle])  # ✅ FIXED: Ensure correct structure before concatenation
+        new_row["timestamp"] = pd.to_datetime(new_row["timestamp"])
+
+        df = pd.concat([df, new_row], ignore_index=True)
+
+        df = df.iloc[-200:]  # Keep last 200 records
+
+        df.to_csv(CSV_FILE, index=False)
+
+        logging.info(f"📊 New candle saved: {new_candle['timestamp']} - Close: {new_candle['close']}")
+        return True
+
+    except Exception as e:
+        logging.error(f"Error saving candle: {e}")
+        return False
+
 
 # Function to calculate MACD
 def calculate_macd(df):
@@ -99,132 +108,109 @@ def calculate_macd(df):
     return df
 
 
-# Function to detect MACD events
-def check_macd_signals(df):
-    global bullish_cross_time, bullish_cross_price, signaled_19_min, signaled_50_percent
+# Function to check MACD buy/sell signals
+def check_macd_signals():
+    global bullish_cross_time, bullish_cross_price, sell_triggered
 
-    if len(df) < 2:
-        return None
+    try:
+        if not os.path.exists(CSV_FILE):
+            return None
 
-    # Check for bullish crossover
-    if df['macd'].iloc[-2] < df['signal'].iloc[-2] and df['macd'].iloc[-1] > df['signal'].iloc[-1]:
-        bullish_cross_time = datetime.now(timezone.utc)
-        bullish_cross_price = df['close'].iloc[-1]
-        signaled_19_min = False
-        signaled_50_percent = False
-        return f"📈 Bullish Crossover at {bullish_cross_price:.2f}"
+        df = pd.read_csv(CSV_FILE)
+        df["timestamp"] = pd.to_datetime(df["timestamp"])
 
-    # Check for bearish crossover
-    if df['macd'].iloc[-2] > df['signal'].iloc[-2] and df['macd'].iloc[-1] < df['signal'].iloc[-1]:
-        return "📉 Bearish Crossover"
+        if len(df) < 30:
+            logging.warning(f"Not enough candles available (received {len(df)}).")
+            return None
 
-    # Check for 19-minute signal after bullish crossover
-    if bullish_cross_time and not signaled_19_min:
-        elapsed_time = datetime.now(timezone.utc) - bullish_cross_time
-        if elapsed_time >= timedelta(minutes=19):
-            signaled_19_min = True
-            return "⏳ 19 Minutes After Bullish Crossover - Selling Signal"
+        df = calculate_macd(df)
 
-    # Check for 0.50% above bullish crossing price
-    if bullish_cross_price and not signaled_50_percent:
-        current_price = df['close'].iloc[-1]
-        target_price = bullish_cross_price * 1.005  # 0.50% above crossing price
-        if current_price >= target_price:
-            signaled_50_percent = True
-            return f"🎯 Price Reached 0.50% Above Bullish Crossing Price at {current_price:.2f}"
+        last_timestamp = df["timestamp"].iloc[-1]
+        last_price = df["close"].iloc[-1]
+
+        # Check for Bullish MACD Crossover (Buy Signal)
+        if df['macd'].iloc[-3] < df['signal'].iloc[-3] and df['macd'].iloc[-2] > df['signal'].iloc[-2]:
+            bullish_cross_time = last_timestamp
+            bullish_cross_price = last_price
+            sell_triggered = False
+            print(f"⭕ Bullish Crossover detected at {bullish_cross_price:.2f}")
+            return f"📊 Bullish Crossover at {bullish_cross_price:.2f}"
+
+        # Check for Sell Conditions
+        if bullish_cross_time and not sell_triggered:
+            elapsed_time = (last_timestamp - bullish_cross_time).total_seconds() / 60  # Minutes since buy signal
+
+            # 1️⃣ Sell after 19 minutes of MACD crossover
+            if elapsed_time >= 19:
+                sell_triggered = True
+                return f"⏳ Sell signal: 19 min after MACD buy signal at {last_price:.2f}"
+
+            # 2️⃣ Sell after Bearish MACD Crossover
+            if df['macd'].iloc[-3] > df['signal'].iloc[-3] and df['macd'].iloc[-2] < df['signal'].iloc[-2]:
+                sell_triggered = True
+                return f"📉 Bearish MACD crossover - Sell at {last_price:.2f}"
+
+            # 3️⃣ Sell after 15 minutes if price remains within ±0.1%
+            price_range = bullish_cross_price * 0.001
+            if elapsed_time >= 15 and (bullish_cross_price - price_range) <= last_price <= (bullish_cross_price + price_range):
+                sell_triggered = True
+                return f"⏳ Sell signal: 15 min passed, price still in ±0.1% range at {last_price:.2f}"
+
+            # 4️⃣ Sell if price increases by more than 0.5%
+            if last_price >= bullish_cross_price * 1.005:
+                sell_triggered = True
+                return f"📈 Price reached +0.5% profit at {last_price:.2f} - Sell now!"
+
+    except Exception as e:
+        logging.error(f"Error in signal detection: {e}")
 
     return None
 
 
-# Function to send starting alert via Telegram
-async def send_started_alert():
-    try:
-        app = ApplicationBuilder().token(TELEGRAM_BOT_TOKEN).build()
-        await app.bot.send_message(chat_id=TELEGRAM_CHAT_ID, text='🤖 Bot started successfully.')
-        print("✅ Started alert sent.")
-    except Exception as e:
-        print(f"❌ Error sending Telegram alert: {e}")
-
-# Function to send alert when the bot ends
-async def send_stopped_alert():
-    try:
-        app = ApplicationBuilder().token(TELEGRAM_BOT_TOKEN).build()
-        await app.bot.send_message(chat_id=TELEGRAM_CHAT_ID, text="⚠️ Bot has stopped running.")
-        print("✅ Stopped alert sent.")
-    except Exception as e:
-        print(f"❌ Error sending stopped alert: {e}")
-
-# Function to send alert via Telegram
+# Function to send Telegram alerts
 async def send_telegram_alert(message):
     try:
         app = ApplicationBuilder().token(TELEGRAM_BOT_TOKEN).build()
         await app.bot.send_message(chat_id=TELEGRAM_CHAT_ID, text=message)
-        print("✅ Signal sent.")
+        logging.info(f"✅ {message} Sent successfully.")
     except Exception as e:
-        print(f"❌ Error sending Telegram alert: {e}")
+        logging.error(f"❌ Error in Telegram alert: {e}")
 
-# Main loop
-def run_bot(symbol="BTC-USDT"):
-    # Create a single event loop for all async calls
-    loop = asyncio.new_event_loop()
-    
+
+# Function to send bot status alerts
+async def send_start_stop_alert(status="start"):
     try:
-        loop.run_until_complete(send_started_alert())  # Send a start alert
+        message = "🤖 Bot started successfully." if status == "start" else "⚠️ Bot has stopped running."
+        app = ApplicationBuilder().token(TELEGRAM_BOT_TOKEN).build()
+        await app.bot.send_message(chat_id=TELEGRAM_CHAT_ID, text=message)
+        logging.info(f"{message} sent.")
+    except Exception as e:
+        logging.error(f"❌ Error sending {status} alert: {e}")
+
+
+# Main bot loop
+async def run_bot(symbol="BTC-USDT"):
+    try:
+        await send_start_stop_alert("start")
 
         while True:
-            try:
-                # Log start of iteration
-                logging.info("Starting new iteration...")
-
-                # Fetch OHLCV data
-                df = fetch_ohlcv(symbol)
-                if not df.empty:
-                    logging.info("Data fetched successfully. Proceeding with MACD calculation.")
-                    
-                    # Calculate MACD
-                    df = calculate_macd(df)
-                    logging.info("MACD calculated successfully.")
-
-                    # Print the most recent MACD, signal, and histogram values
-                    latest_macd = df.iloc[-1]['macd']
-                    latest_signal = df.iloc[-1]['signal']
-                    latest_hist = df.iloc[-1]['hist']
-                    print(f"Latest MACD: {latest_macd:.6f}, Signal: {latest_signal:.6f}, Histogram: {latest_hist:.6f}")
-                    logging.info(f"MACD: {latest_macd:.6f}, Signal: {latest_signal:.6f}, Histogram: {latest_hist:.6f}")
-
-                    # Check for signals
-                    signal = check_macd_signals(df)
+            new_candle = fetch_latest_candle(symbol)
+            if new_candle:
+                saved = save_candle_locally(new_candle)
+                if saved:
+                    signal = check_macd_signals()
                     if signal:
-                        message = f"{datetime.now(timezone.utc)} - {signal}"
-                        print(message)
-                        logging.info(f"Signal detected: {message}")
-                        
-                        # Use the event loop to send Telegram alert
-                        loop.run_until_complete(send_telegram_alert(message))
-                        logging.info("Telegram alert sent.")
+                        await send_telegram_alert(f"{datetime.now(timezone.utc)} - {signal}")
 
-                # Print a point to indicate progress
-                print(".", end="", flush=True)
+            await asyncio.sleep(60)
 
-                # Log completion of iteration
-                logging.info("Iteration complete. Waiting for next minute.")
-                time.sleep(60)  # Wait for the next minute
-            except Exception as e:
-                logging.error(f"Error during bot execution: {e}")
-                print(f"Error: {e}")
-                time.sleep(60)  # Wait before retrying
     except KeyboardInterrupt:
-        logging.info("Bot stopped manually.")
-        loop.run_until_complete(send_stopped_alert())  # Send a stopped alert
         print("\nBot stopped manually.")
     except Exception as e:
         logging.error(f"Unexpected error: {e}")
-        loop.run_until_complete(send_stopped_alert())  # Send a stopped alert
-        print(f"Unexpected error: {e}")
     finally:
-        loop.close()
-        logging.info("Event loop closed. Bot shutdown complete.")
+        await send_start_stop_alert("stop")
 
-# Start the bot
+
 if __name__ == "__main__":
-    run_bot()
+    asyncio.run(run_bot())
